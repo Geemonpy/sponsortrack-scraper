@@ -20,6 +20,7 @@ import io
 import os
 import re
 import sys
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -47,6 +48,16 @@ SPONSOR_REGISTER_PAGE = (
     "https://www.gov.uk/government/publications/register-of-licensed-sponsors-workers"
 )
 
+SPONSORSHIP_QUERIES = [
+    "visa sponsorship",
+    "sponsorship available",
+    "skilled worker visa",
+    "tier 2 sponsorship",
+    "certificate of sponsorship",
+    "we offer sponsorship",
+    "visa sponsorship available",
+]
+
 SEARCH_QUERIES = {
     "IT": [
         "junior software developer",
@@ -71,6 +82,7 @@ SEARCH_QUERIES = {
         "mental health support worker",
         "autism support worker",
     ],
+    "sponsorship": SPONSORSHIP_QUERIES,
 }
 
 POSITIVE_KEYWORDS = [
@@ -314,6 +326,52 @@ def fetch_adzuna(query: str, page: int) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# Deduplication
+# --------------------------------------------------------------------------- #
+def deduplicate_rows(rows: list[dict]) -> tuple[list[dict], int]:
+    """Collapse same-title+company listings to one representative row each.
+
+    Representative = most recent by posted_date.  If the group spans multiple
+    locations the representative's location is rewritten as
+    "First Location +N more locations".
+    Returns (deduped_rows, n_collapsed).
+    """
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        title_key = re.sub(r"\s+", " ", (row.get("title") or "").lower().strip())
+        company_key = re.sub(r"\s+", " ", (row.get("company") or "").lower().strip())
+        groups[f"{title_key}||{company_key}"].append(row)
+
+    result: list[dict] = []
+    collapsed = 0
+    for group in groups.values():
+        if len(group) == 1:
+            result.append(group[0])
+            continue
+
+        collapsed += len(group) - 1
+        # Most-recent first; rows without a date sort to the end.
+        group.sort(key=lambda r: r.get("posted_date") or "0000-00-00", reverse=True)
+        rep = dict(group[0])  # shallow copy so we don't mutate the original
+
+        # Collect unique locations in order of recency.
+        seen: set[str] = set()
+        unique_locs: list[str] = []
+        for r in group:
+            loc = (r.get("location") or "").strip()
+            if loc and loc not in seen:
+                seen.add(loc)
+                unique_locs.append(loc)
+
+        if len(unique_locs) > 1:
+            rep["location"] = f"{unique_locs[0]} +{len(unique_locs) - 1} more locations"
+
+        result.append(rep)
+
+    return result, collapsed
+
+
+# --------------------------------------------------------------------------- #
 # Main scrape
 # --------------------------------------------------------------------------- #
 def run_scrape() -> None:
@@ -346,6 +404,10 @@ def run_scrape() -> None:
         log("Nothing to upsert.")
         return
 
+    rows, collapsed = deduplicate_rows(rows)
+    log(f"Collapsed {len(rows) + collapsed} jobs into {len(rows)} unique listings "
+        f"({collapsed} duplicates removed)")
+
     # Upsert in batches; dedupe on the unique external_id column.
     BATCH = 500
     for i in range(0, len(rows), BATCH):
@@ -355,7 +417,8 @@ def run_scrape() -> None:
 
     # Remove rows from previous runs that are no longer valid this scrape.
     # Only reached when rows is non-empty, so we never wipe the table on a failed run.
-    valid_ids_list = list(rows_by_id.keys())
+    # Use deduped ids so displaced duplicate rows are also swept from the DB.
+    valid_ids_list = [r["external_id"] for r in rows]
     del_result = (
         supabase.table("jobs")
         .delete()
