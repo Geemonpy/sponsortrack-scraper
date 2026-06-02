@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SponsorTrack — UK Visa Sponsor Jobs</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          display: ['Fraunces', 'serif'],
+          sans: ['"Hanken Grotesk"', 'system-ui', 'sans-serif'],
+        },
+        colors: {
+          ink: '#1a1c1e',
+          parchment: '#f6f3ec',
+          card: '#fffdf8',
+          accent: '#2f5d50',
+          verified: '#1f7a4d',
+          likely: '#b07407',
+          hidden: '#6b7280',
+        },
+      },
+    },
+  };
+</script>
+<style>
+  body { background-color: #f6f3ec; }
+  .badge-dot { box-shadow: 0 0 0 4px rgba(0,0,0,0.04); }
+  .job-card { transition: transform .15s ease, box-shadow .15s ease; }
+  .job-card:hover { transform: translateY(-2px); box-shadow: 0 10px 30px -12px rgba(26,28,30,.25); }
+  .fade-in { animation: fade .4s ease both; }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  /* hide number input spinners */
+  select { -webkit-appearance: none; appearance: none; }
+</style>
+</head>
+<body class="font-sans text-ink antialiased">
+
+<!-- ============ CONFIG ============ -->
+<script>
+  // 👉 After deploying the backend, change this to your Railway URL,
+  //    e.g. "https://sponsortrack-api.up.railway.app"
+  const API_BASE = "http://localhost:8000";
+</script>
+
+<!-- ============ HEADER ============ -->
+<header class="border-b border-ink/10">
+  <div class="max-w-5xl mx-auto px-5 py-5 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-lg bg-accent text-parchment grid place-items-center font-display font-extrabold text-lg">S</div>
+      <span class="font-display font-extrabold text-xl tracking-tight">SponsorTrack</span>
+    </div>
+    <a href="#alerts" class="text-sm font-semibold text-accent hover:underline underline-offset-4">Get alerts →</a>
+  </div>
+</header>
+
+<!-- ============ HERO ============ -->
+<section class="max-w-5xl mx-auto px-5 pt-10 pb-6">
+  <h1 class="font-display font-extrabold text-4xl sm:text-5xl leading-[1.05] tracking-tight max-w-2xl">
+    UK jobs from <span class="text-accent">licensed visa sponsors.</span>
+  </h1>
+  <p class="mt-4 text-ink/70 text-lg max-w-xl">
+    Every employer here is cross-checked against the Home Office register of licensed sponsors. No noise, no dead ends.
+  </p>
+
+  <!-- stats -->
+  <div id="stats" class="mt-7 grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-2xl">
+    <!-- filled by JS -->
+  </div>
+</section>
+
+<!-- ============ FILTER BAR ============ -->
+<section class="max-w-5xl mx-auto px-5 sticky top-0 z-10 bg-parchment/95 backdrop-blur py-4 border-y border-ink/10">
+  <div class="flex flex-wrap items-center gap-2">
+    <!-- category pills -->
+    <div id="categoryPills" class="flex gap-1.5 p-1 bg-ink/5 rounded-full">
+      <button data-cat="" class="cat-pill px-3.5 py-1.5 text-sm font-semibold rounded-full">All</button>
+      <button data-cat="IT" class="cat-pill px-3.5 py-1.5 text-sm font-semibold rounded-full">IT</button>
+      <button data-cat="care" class="cat-pill px-3.5 py-1.5 text-sm font-semibold rounded-full">Care</button>
+      <button data-cat="graduate" class="cat-pill px-3.5 py-1.5 text-sm font-semibold rounded-full">Graduate</button>
+    </div>
+
+    <div class="flex-1"></div>
+
+    <select id="badgeFilter" class="bg-card border border-ink/15 rounded-lg px-3 py-2 text-sm font-medium pr-8" style="background-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 20 20%22 fill=%22%231a1c1e%22%3E%3Cpath d=%22M5.5 7.5l4.5 4.5 4.5-4.5z%22/%3E%3C/svg%3E');background-repeat:no-repeat;background-position:right .5rem center;background-size:1.1em;">
+      <option value="">All badges</option>
+      <option value="verified">✅ Verified</option>
+      <option value="likely">🟡 Likely</option>
+      <option value="hidden">⚪ Unconfirmed</option>
+    </select>
+
+    <select id="daysFilter" class="bg-card border border-ink/15 rounded-lg px-3 py-2 text-sm font-medium pr-8" style="background-image:url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 20 20%22 fill=%22%231a1c1e%22%3E%3Cpath d=%22M5.5 7.5l4.5 4.5 4.5-4.5z%22/%3E%3C/svg%3E');background-repeat:no-repeat;background-position:right .5rem center;background-size:1.1em;">
+      <option value="">Any time</option>
+      <option value="1">Last 24 hours</option>
+      <option value="7">Last 7 days</option>
+      <option value="14">Last 14 days</option>
+      <option value="30">Last 30 days</option>
+    </select>
+
+    <input id="locationSearch" type="text" placeholder="Location…"
+      class="bg-card border border-ink/15 rounded-lg px-3 py-2 text-sm w-32 placeholder-ink/40" />
+    <input id="keywordSearch" type="text" placeholder="Title or company…"
+      class="bg-card border border-ink/15 rounded-lg px-3 py-2 text-sm w-44 placeholder-ink/40" />
+  </div>
+</section>
+
+<!-- ============ RESULTS ============ -->
+<main class="max-w-5xl mx-auto px-5 py-6">
+  <div id="resultMeta" class="text-sm text-ink/50 mb-4"></div>
+  <div id="jobs" class="grid gap-3"></div>
+  <div id="empty" class="hidden text-center py-20 text-ink/50">
+    <p class="font-display text-2xl text-ink/70">No jobs match those filters.</p>
+    <p class="mt-1">Try widening the time range or clearing the search.</p>
+  </div>
+</main>
+
+<!-- ============ EMAIL CAPTURE ============ -->
+<section id="alerts" class="bg-accent text-parchment mt-10">
+  <div class="max-w-5xl mx-auto px-5 py-14 grid sm:grid-cols-2 gap-8 items-center">
+    <div>
+      <h2 class="font-display font-extrabold text-3xl leading-tight">Get daily visa-sponsor job alerts</h2>
+      <p class="mt-3 text-parchment/80">New sponsor-verified roles, delivered to your inbox every morning. Free, no spam.</p>
+    </div>
+    <div>
+      <div id="alertForm" class="flex gap-2">
+        <input id="alertEmail" type="email" placeholder="you@email.com"
+          class="flex-1 rounded-lg px-4 py-3 text-ink placeholder-ink/40 border-0" />
+        <button id="alertBtn" class="bg-ink text-parchment font-semibold px-5 py-3 rounded-lg hover:bg-ink/85 transition">
+          Subscribe
+        </button>
+      </div>
+      <p id="alertMsg" class="mt-2 text-sm text-parchment/90 h-5"></p>
+    </div>
+  </div>
+</section>
+
+<footer class="max-w-5xl mx-auto px-5 py-8 text-center text-sm text-ink/40">
+  Sponsor data: Home Office register of licensed sponsors. Job data: Adzuna. Badges are guidance, not a guarantee — always confirm with the employer.
+</footer>
+
+<!-- ============ SCRIPT ============ -->
+<script>
+const $ = (sel) => document.querySelector(sel);
+const jobsEl = $('#jobs');
+const emptyEl = $('#empty');
+const metaEl = $('#resultMeta');
+
+const BADGES = {
+  verified: { label: 'Verified sponsor', cls: 'text-verified bg-verified/10', dot: 'bg-verified', icon: '✅' },
+  likely:   { label: 'Likely sponsor',   cls: 'text-likely bg-likely/10',     dot: 'bg-likely',   icon: '🟡' },
+  hidden:   { label: 'Unconfirmed',      cls: 'text-hidden bg-hidden/10',     dot: 'bg-hidden',   icon: '⚪' },
+};
+
+const state = { category: '', badge: '', days: '', location: '', search: '' };
+
+function escapeHtml(s) {
+  return (s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const days = Math.floor((Date.now() - new Date(dateStr)) / 86400000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return days + ' days ago';
+  if (days < 14) return '1 week ago';
+  return Math.floor(days / 7) + ' weeks ago';
+}
+
+function jobCard(job) {
+  const b = BADGES[job.badge] || BADGES.hidden;
+  return `
+  <article class="job-card fade-in bg-card border border-ink/10 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="badge-dot inline-block w-2.5 h-2.5 rounded-full ${b.dot}"></span>
+        <span class="text-xs font-bold uppercase tracking-wide px-2 py-0.5 rounded ${b.cls}">${b.icon} ${b.label}</span>
+      </div>
+      <h3 class="font-display font-semibold text-xl leading-snug truncate">${escapeHtml(job.title)}</h3>
+      <p class="text-ink/70 font-medium truncate">${escapeHtml(job.company)}</p>
+      <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-ink/55">
+        ${job.location ? `<span>📍 ${escapeHtml(job.location)}</span>` : ''}
+        <span>💷 ${escapeHtml(job.salary || 'Not specified')}</span>
+        <span>🕑 ${timeAgo(job.posted_date)}</span>
+        <span class="text-ink/35">via ${escapeHtml(job.source || 'Adzuna')}</span>
+      </div>
+    </div>
+    <a href="${escapeHtml(job.apply_url || '#')}" target="_blank" rel="noopener"
+       class="shrink-0 bg-accent text-parchment font-semibold px-5 py-2.5 rounded-lg hover:bg-accent/90 transition text-center">
+      Apply
+    </a>
+  </article>`;
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch(`${API_BASE}/stats`);
+    const s = await r.json();
+    const items = [
+      { n: s.total,    l: 'Total jobs' },
+      { n: s.verified, l: 'Verified',  c: 'text-verified' },
+      { n: s.likely,   l: 'Likely',    c: 'text-likely' },
+      { n: s.today,    l: 'New today' },
+    ];
+    $('#stats').innerHTML = items.map(i => `
+      <div class="bg-card border border-ink/10 rounded-xl px-4 py-3">
+        <div class="font-display font-extrabold text-2xl ${i.c || ''}">${i.n ?? 0}</div>
+        <div class="text-xs uppercase tracking-wide text-ink/45 font-semibold">${i.l}</div>
+      </div>`).join('');
+  } catch (e) {
+    $('#stats').innerHTML = '';
+  }
+}
+
+async function loadJobs() {
+  jobsEl.innerHTML = `<div class="text-center py-16 text-ink/40">Loading sponsor jobs…</div>`;
+  emptyEl.classList.add('hidden');
+
+  const params = new URLSearchParams();
+  // "graduate" is a client-side title filter, not a stored category.
+  if (state.category && state.category !== 'graduate') params.set('category', state.category);
+  if (state.badge) params.set('badge', state.badge);
+  if (state.days) params.set('days', state.days);
+  if (state.location) params.set('location', state.location);
+  if (state.search) params.set('search', state.search);
+
+  try {
+    const r = await fetch(`${API_BASE}/jobs?${params.toString()}`);
+    const data = await r.json();
+    let jobs = data.jobs || [];
+
+    if (state.category === 'graduate') {
+      jobs = jobs.filter(j => /graduate|junior|trainee|entry/i.test(j.title || ''));
+    }
+
+    if (!jobs.length) {
+      jobsEl.innerHTML = '';
+      metaEl.textContent = '';
+      emptyEl.classList.remove('hidden');
+      return;
+    }
+    metaEl.textContent = `${jobs.length} job${jobs.length === 1 ? '' : 's'}`;
+    jobsEl.innerHTML = jobs.map(jobCard).join('');
+  } catch (e) {
+    jobsEl.innerHTML = `<div class="text-center py-16 text-ink/50">
+      Couldn't reach the API. Make sure the backend is running and <code>API_BASE</code> is set correctly.
+    </div>`;
+    metaEl.textContent = '';
+  }
+}
+
+// debounce for text inputs
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+// ---- wiring ----
+function setActivePill() {
+  document.querySelectorAll('.cat-pill').forEach(btn => {
+    const active = btn.dataset.cat === state.category;
+    btn.classList.toggle('bg-card', active);
+    btn.classList.toggle('shadow', active);
+    btn.classList.toggle('text-accent', active);
+    btn.classList.toggle('text-ink/55', !active);
+  });
+}
+
+document.querySelectorAll('.cat-pill').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.category = btn.dataset.cat;
+    setActivePill();
+    loadJobs();
+  });
+});
+
+$('#badgeFilter').addEventListener('change', e => { state.badge = e.target.value; loadJobs(); });
+$('#daysFilter').addEventListener('change', e => { state.days = e.target.value; loadJobs(); });
+$('#locationSearch').addEventListener('input', debounce(e => { state.location = e.target.value.trim(); loadJobs(); }, 400));
+$('#keywordSearch').addEventListener('input', debounce(e => { state.search = e.target.value.trim(); loadJobs(); }, 400));
+
+// email capture
+$('#alertBtn').addEventListener('click', async () => {
+  const email = $('#alertEmail').value.trim();
+  const msg = $('#alertMsg');
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    msg.textContent = 'Please enter a valid email address.';
+    return;
+  }
+  $('#alertBtn').disabled = true;
+  try {
+    const r = await fetch(`${API_BASE}/alerts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (!r.ok) throw new Error();
+    msg.textContent = '✓ You\'re subscribed. Check your inbox each morning.';
+    $('#alertEmail').value = '';
+  } catch (e) {
+    msg.textContent = 'Something went wrong — please try again.';
+  } finally {
+    $('#alertBtn').disabled = false;
+  }
+});
+
+// init
+setActivePill();
+loadStats();
+loadJobs();
+</script>
+</body>
+</html>
