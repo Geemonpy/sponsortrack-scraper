@@ -27,6 +27,14 @@ import httpx
 from dotenv import load_dotenv
 from supabase import create_client
 
+from activejobs_source import (
+    ACTIVEJOBS_MAX_PAGES,
+    fetch_activejobs_page,
+    is_junior_friendly,
+    is_uk_job,
+    map_to_adzuna_shape,
+)
+
 load_dotenv()
 
 # --------------------------------------------------------------------------- #
@@ -37,6 +45,7 @@ ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 SPONSOR_CSV_URL = os.environ.get("SPONSOR_CSV_URL", "").strip()
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 
 ADZUNA_COUNTRY = "gb"
 RESULTS_PER_PAGE = 50          # Adzuna max
@@ -397,6 +406,59 @@ def run_scrape() -> None:
                     rows_by_id[row["external_id"]] = row  # dedupe across queries
             log(f"  {category:<4} '{query}' -> running total {len(rows_by_id)}")
 
+    # ------------------------------------------------------------------ #
+    # Active Jobs DB
+    # ------------------------------------------------------------------ #
+    if not RAPIDAPI_KEY:
+        log("RAPIDAPI_KEY not set — skipping Active Jobs DB")
+    else:
+        ajdb_fetched = 0
+        ajdb_rejected_uk = 0
+        ajdb_kept = 0
+        date_filter = (
+            datetime.now(timezone.utc).date() - timedelta(days=2)
+        ).strftime("%Y-%m-%d")
+        log(f"Fetching Active Jobs DB (date_filter={date_filter}) ...")
+        try:
+            for page_num in range(ACTIVEJOBS_MAX_PAGES):
+                offset = page_num * 100  # 0, then 100
+                raw_jobs = fetch_activejobs_page(RAPIDAPI_KEY, offset, date_filter)
+                log(f"  Active Jobs DB offset={offset} -> {len(raw_jobs)} raw")
+                if not raw_jobs:
+                    break
+                for job in raw_jobs:
+                    ajdb_fetched += 1
+                    if not is_uk_job(job):
+                        ajdb_rejected_uk += 1
+                        continue
+                    adzuna_like = map_to_adzuna_shape(job)
+                    if adzuna_like is None:
+                        continue  # no usable location — skip per spec
+                    row = classify(adzuna_like, sponsor_index)
+                    if row is None:
+                        rejected += 1
+                        continue
+                    job_id = job.get("id", "")
+                    row["external_id"] = f"activejobs:{job_id}"
+                    row["source"] = "Active Jobs DB"
+                    row["apply_url"] = job.get("url")
+                    row["category"] = "ats"
+                    row["junior_friendly"] = is_junior_friendly(
+                        job.get("title", ""), job.get("description_text", "")
+                    )
+                    rows_by_id[row["external_id"]] = row
+                    ajdb_kept += 1
+            log(
+                f"Active Jobs DB: fetched={ajdb_fetched}, "
+                f"rejected_non_uk={ajdb_rejected_uk}, "
+                f"kept={ajdb_kept}"
+            )
+        except Exception as exc:
+            log(
+                f"WARNING: Active Jobs DB fetch failed ({exc!r}) — "
+                "continuing with Adzuna jobs only"
+            )
+
     rows = list(rows_by_id.values())
     log(f"Collected {len(rows)} jobs ({rejected} auto-rejected)")
 
@@ -409,10 +471,27 @@ def run_scrape() -> None:
         f"({collapsed} duplicates removed)")
 
     # Upsert in batches; dedupe on the unique external_id column.
+    # If the junior_friendly column is missing, log the SQL to add it and retry
+    # the affected batches without that field.
     BATCH = 500
+    drop_junior_col = False
     for i in range(0, len(rows), BATCH):
         chunk = rows[i:i + BATCH]
-        supabase.table("jobs").upsert(chunk, on_conflict="external_id").execute()
+        if drop_junior_col:
+            chunk = [{k: v for k, v in r.items() if k != "junior_friendly"} for r in chunk]
+        try:
+            supabase.table("jobs").upsert(chunk, on_conflict="external_id").execute()
+        except Exception as exc:
+            if "junior_friendly" in str(exc) and not drop_junior_col:
+                drop_junior_col = True
+                log("WARNING: 'junior_friendly' column not found in Supabase.")
+                log("  Run this SQL to add it:")
+                log("    ALTER TABLE jobs ADD COLUMN junior_friendly BOOLEAN;")
+                log("  Retrying upsert without junior_friendly ...")
+                chunk = [{k: v for k, v in r.items() if k != "junior_friendly"} for r in chunk]
+                supabase.table("jobs").upsert(chunk, on_conflict="external_id").execute()
+            else:
+                raise
         log(f"  upserted {i + len(chunk)}/{len(rows)}")
 
     # Remove rows from previous runs that are no longer valid this scrape.
