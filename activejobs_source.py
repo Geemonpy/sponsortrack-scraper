@@ -1,8 +1,8 @@
 """
-Active Jobs DB source module
+Fantastic Jobs source module
 ----------------------------
-Fetches from the RapidAPI "Active Jobs DB" endpoint and maps jobs into the
-Adzuna-compatible shape expected by classify() in scraper.py.
+Fetches from the Fantastic.jobs direct API (data.fantastic.jobs/v1/active-ats)
+and maps jobs into the Adzuna-compatible shape expected by classify() in scraper.py.
 """
 
 import re
@@ -10,15 +10,19 @@ import time
 
 import httpx
 
-ACTIVEJOBS_HOST = "active-jobs-db.p.rapidapi.com"
-ACTIVEJOBS_ENDPOINT = f"https://{ACTIVEJOBS_HOST}/active-ats-7d"
-ACTIVEJOBS_LIMIT = 100
-ACTIVEJOBS_MAX_PAGES = 1  # free tier: 1 × 100 = 100 jobs max
+FANTASTIC_ENDPOINT = "https://data.fantastic.jobs/v1/active-ats"
+FANTASTIC_LIMIT = 50          # was 100 — 1 credit per job, so keep pulls small on the trial
+FANTASTIC_MAX_PAGES = 1       # 1 page x 50 = max 50 jobs/run (preserve trial credits)
+
+# Hard guard: counts how many real API requests we've made this process.
+# Even if scraper.py loops more than FANTASTIC_MAX_PAGES, this module will refuse
+# to make another billed request and return empty, ending pagination cleanly.
+_pages_fetched = 0
 
 # Strings that strongly suggest a non-UK job despite "United Kingdom" geocoding
 _NON_UK_SIGNALS = ["canberra", "australia", "act health"]
 
-# Bare dollar amounts (not £) — strong non-UK signal
+# Bare dollar amounts (not GBP) — strong non-UK signal
 _DOLLAR_RE = re.compile(r"\$\s*\d")
 
 # AUD as a standalone currency word — catches "AUD 50,000" while avoiding "auditor"
@@ -38,7 +42,8 @@ def is_uk_job(job: dict) -> bool:
     if "united kingdom" not in countries:
         return False
     text = (
-        (job.get("title") or "") + " " + (job.get("description_text") or "")
+        (job.get("title") or "") + " " +
+        (job.get("description") or job.get("description_text") or "")
     ).lower()
     for signal in _NON_UK_SIGNALS:
         if signal in text:
@@ -60,7 +65,7 @@ def is_junior_friendly(title: str, description: str) -> bool:
 
 def map_to_adzuna_shape(job: dict) -> dict | None:
     """
-    Map an Active Jobs DB job dict into the Adzuna-compatible shape that
+    Map a Fantastic Jobs API job dict into the Adzuna-compatible shape that
     classify() expects. Returns None if the job has no usable location.
     """
     locations = job.get("locations_derived") or []
@@ -69,14 +74,15 @@ def map_to_adzuna_shape(job: dict) -> dict | None:
     location_str = locations[0]
 
     # date_posted is "YYYY-MM-DD"; parse_posted_date() reads the "created" key
-    date_posted = (job.get("date_posted") or "")[:10]  # keep date portion only
+    date_posted = (job.get("date_posted") or "")[:10]
+    description = job.get("description") or job.get("description_text") or ""
 
     return {
-        "id": job.get("id", ""),
+        "id": str(job.get("id", "")),
         "title": (job.get("title") or "").strip(),
         "company": {"display_name": job.get("organization") or "Unknown"},
         "location": {"display_name": location_str},
-        "description": job.get("description_text") or "",
+        "description": description,
         "created": date_posted,
         "redirect_url": job.get("url"),
         "salary_min": None,
@@ -84,34 +90,40 @@ def map_to_adzuna_shape(job: dict) -> dict | None:
     }
 
 
-def fetch_activejobs_page(rapidapi_key: str, offset: int, date_filter: str) -> list[dict]:
+def fetch_fantastic_page(fantastic_key: str, offset: int) -> tuple[list[dict], dict]:
     """
-    Fetch one page from the Active Jobs DB endpoint.
-    Raises httpx.HTTPStatusError on non-200; raises on network failure.
-    Caller is responsible for catching and logging.
+    Fetch one page from the Fantastic.jobs direct API.
+    Returns (jobs, response_headers) — caller logs the credit headers.
+    Raises httpx.HTTPStatusError on non-200 after one retry on 429.
+
+    Hard-capped at FANTASTIC_MAX_PAGES billed requests per process to protect
+    the trial credit balance.
     """
-    headers = {
-        "x-rapidapi-host": ACTIVEJOBS_HOST,
-        "x-rapidapi-key": rapidapi_key,
-    }
+    global _pages_fetched
+    if _pages_fetched >= FANTASTIC_MAX_PAGES:
+        # Already hit the per-run request cap — make no further billed calls.
+        return [], {}
+    _pages_fetched += 1
+
     params = {
-        "location_filter": "United Kingdom",
-        "description_type": "text",
-        "include_ai": "true",
-        "limit": ACTIVEJOBS_LIMIT,
+        "apiKey": fantastic_key,
+        "time_frame": "24h",
+        "location": "United Kingdom",
+        "description_format": "text",
+        "limit": FANTASTIC_LIMIT,
         "offset": offset,
-        "date_filter": date_filter,
     }
-    resp = httpx.get(ACTIVEJOBS_ENDPOINT, headers=headers, params=params, timeout=60)
+    resp = httpx.get(FANTASTIC_ENDPOINT, params=params, timeout=60)
     if resp.status_code == 429:
         time.sleep(3)
-        resp = httpx.get(ACTIVEJOBS_ENDPOINT, headers=headers, params=params, timeout=60)
+        resp = httpx.get(FANTASTIC_ENDPOINT, params=params, timeout=60)
     resp.raise_for_status()
+
+    headers = dict(resp.headers)
     data = resp.json()
     if isinstance(data, list):
-        return data
-    # Handle wrapped responses e.g. {"data": [...]}
+        return data, headers
     for key in ("data", "jobs", "results"):
         if isinstance(data.get(key), list):
-            return data[key]
-    return []
+            return data[key], headers
+    return [], headers

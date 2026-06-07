@@ -28,8 +28,9 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from activejobs_source import (
-    ACTIVEJOBS_MAX_PAGES,
-    fetch_activejobs_page,
+    FANTASTIC_LIMIT,
+    FANTASTIC_MAX_PAGES,
+    fetch_fantastic_page,
     is_junior_friendly,
     is_uk_job,
     map_to_adzuna_shape,
@@ -46,6 +47,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 SPONSOR_CSV_URL = os.environ.get("SPONSOR_CSV_URL", "").strip()
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+FANTASTIC_API_KEY = os.environ.get("FANTASTIC_API_KEY", "")
 
 ADZUNA_COUNTRY = "gb"
 RESULTS_PER_PAGE = 50          # Adzuna max
@@ -407,55 +409,57 @@ def run_scrape() -> None:
             log(f"  {category:<4} '{query}' -> running total {len(rows_by_id)}")
 
     # ------------------------------------------------------------------ #
-    # Active Jobs DB
+    # Fantastic Jobs (direct API)
     # ------------------------------------------------------------------ #
-    if not RAPIDAPI_KEY:
-        log("RAPIDAPI_KEY not set — skipping Active Jobs DB")
+    if not FANTASTIC_API_KEY:
+        log("FANTASTIC_API_KEY not set — skipping Fantastic Jobs")
     else:
-        ajdb_fetched = 0
-        ajdb_rejected_uk = 0
-        ajdb_kept = 0
-        date_filter = (
-            datetime.now(timezone.utc).date() - timedelta(days=2)
-        ).strftime("%Y-%m-%d")
-        log(f"Fetching Active Jobs DB (date_filter={date_filter}) ...")
+        fantastic_fetched = 0
+        fantastic_rejected_uk = 0
+        fantastic_kept = 0
+        log("Fetching Fantastic Jobs (direct API, time_frame=24h) ...")
         try:
-            for page_num in range(ACTIVEJOBS_MAX_PAGES):
-                offset = page_num * 100  # 0, then 100
-                raw_jobs = fetch_activejobs_page(RAPIDAPI_KEY, offset, date_filter)
-                log(f"  Active Jobs DB offset={offset} -> {len(raw_jobs)} raw")
+            for page_num in range(FANTASTIC_MAX_PAGES):
+                offset = page_num * FANTASTIC_LIMIT
+                raw_jobs, resp_headers = fetch_fantastic_page(FANTASTIC_API_KEY, offset)
+                if page_num == 0:
+                    jobs_rem = resp_headers.get("x-api-jobs-remaining", "?")
+                    req_rem = resp_headers.get("x-api-requests-remaining", "?")
+                    log(f"  Fantastic Jobs credits — jobs-remaining={jobs_rem}, requests-remaining={req_rem}")
+                log(f"  Fantastic Jobs offset={offset} -> {len(raw_jobs)} raw")
                 if not raw_jobs:
                     break
                 for job in raw_jobs:
-                    ajdb_fetched += 1
+                    fantastic_fetched += 1
                     if not is_uk_job(job):
-                        ajdb_rejected_uk += 1
+                        fantastic_rejected_uk += 1
                         continue
                     adzuna_like = map_to_adzuna_shape(job)
                     if adzuna_like is None:
-                        continue  # no usable location — skip per spec
+                        continue
                     row = classify(adzuna_like, sponsor_index)
                     if row is None:
                         rejected += 1
                         continue
-                    job_id = job.get("id", "")
-                    row["external_id"] = f"activejobs:{job_id}"
-                    row["source"] = "Active Jobs DB"
+                    job_id = str(job.get("id", ""))
+                    row["external_id"] = f"fantastic:{job_id}"
+                    row["source"] = "Fantastic Jobs"
                     row["apply_url"] = job.get("url")
                     row["category"] = "ats"
                     row["junior_friendly"] = is_junior_friendly(
-                        job.get("title", ""), job.get("description_text", "")
+                        job.get("title", ""),
+                        job.get("description") or job.get("description_text", ""),
                     )
                     rows_by_id[row["external_id"]] = row
-                    ajdb_kept += 1
+                    fantastic_kept += 1
             log(
-                f"Active Jobs DB: fetched={ajdb_fetched}, "
-                f"rejected_non_uk={ajdb_rejected_uk}, "
-                f"kept={ajdb_kept}"
+                f"Fantastic Jobs: fetched={fantastic_fetched}, "
+                f"rejected_non_uk={fantastic_rejected_uk}, "
+                f"kept={fantastic_kept}"
             )
         except Exception as exc:
             log(
-                f"WARNING: Active Jobs DB fetch failed ({exc!r}) — "
+                f"WARNING: Fantastic Jobs fetch failed ({exc!r}) — "
                 "continuing with Adzuna jobs only"
             )
 
