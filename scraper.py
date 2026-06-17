@@ -201,30 +201,59 @@ def discover_sponsor_csv_url() -> str:
     return url
 
 
-def load_sponsor_index() -> set[str]:
-    """Download the register CSV and return a set of normalised company keys."""
+def load_sponsor_index() -> dict[str, dict]:
+    """Download the register CSV and return a sponsor info dict.
+
+    Keyed by normalised org name. Each value contains:
+        rating:            "A" | "B" | "unknown"
+        routes:            set[str] of all licensed routes for that org
+        is_skilled_worker: True if "Skilled Worker" is among the routes
+    """
     url = discover_sponsor_csv_url()
     log("Downloading sponsor register (~10 MB) ...")
     resp = httpx.get(url, timeout=120, follow_redirects=True)
     resp.raise_for_status()
 
     text = resp.content.decode("utf-8-sig", errors="replace")
-    reader = csv.reader(io.StringIO(text))
-    header = next(reader, [])
-    # The org-name column is usually the first; find it defensively.
-    org_idx = 0
-    for i, col in enumerate(header):
-        if "organisation" in col.lower() or "name" in col.lower():
-            org_idx = i
-            break
+    reader = csv.DictReader(io.StringIO(text))
+    headers = list(reader.fieldnames or [])
 
-    index: set[str] = set()
+    org_col    = next((h for h in headers if "organisation" in h.lower() or "name" in h.lower()), None)
+    rating_col = next((h for h in headers if "rating" in h.lower() or "type" in h.lower()), None)
+    route_col  = next((h for h in headers if "route" in h.lower()), None)
+
+    if not org_col:
+        raise RuntimeError("Cannot identify organisation column in sponsor register CSV")
+
+    index: dict[str, dict] = {}
     for row in reader:
-        if len(row) > org_idx:
-            key = normalise_company(row[org_idx])
-            if key:
-                index.add(key)
-    log(f"Loaded {len(index):,} unique sponsor organisations")
+        org = (row.get(org_col) or "").strip()
+        key = normalise_company(org)
+        if not key:
+            continue
+
+        rating_raw = (row.get(rating_col) or "").strip() if rating_col else ""
+        route_raw  = (row.get(route_col)  or "").strip() if route_col  else ""
+
+        m = re.search(r"\b([AB])\s*[Rr]ating", rating_raw)
+        row_rating = m.group(1).upper() if m else "unknown"
+
+        if key not in index:
+            index[key] = {"rating": row_rating, "routes": set(), "is_skilled_worker": False}
+        else:
+            # A beats B beats unknown when the same org appears on multiple routes.
+            existing = index[key]["rating"]
+            if row_rating == "A" or (row_rating == "B" and existing == "unknown"):
+                index[key]["rating"] = row_rating
+
+        if route_raw:
+            index[key]["routes"].add(route_raw)
+            if "skilled worker" in route_raw.lower():
+                index[key]["is_skilled_worker"] = True
+
+    skilled_count = sum(1 for v in index.values() if v["is_skilled_worker"])
+    log(f"Loaded {len(index):,} unique sponsor organisations "
+        f"({skilled_count:,} with Skilled Worker licence)")
     return index
 
 
@@ -264,7 +293,7 @@ def parse_posted_date(job: dict) -> date | None:
         return None
 
 
-def classify(job: dict, sponsor_index: set[str]) -> dict | None:
+def classify(job: dict, sponsor_index: dict[str, dict]) -> dict | None:
     """Apply badge logic. Returns a row dict, or None if the job is auto-rejected."""
     description = (job.get("description") or "").lower()
     company = (job.get("company") or {}).get("display_name", "") or "Unknown"
@@ -284,16 +313,23 @@ def classify(job: dict, sponsor_index: set[str]) -> dict | None:
     if positives and has_negated_positive(description, positives):
         return None
 
-    sponsor_match = normalise_company(company) in sponsor_index
+    sponsor_info = sponsor_index.get(normalise_company(company))
+    sponsor_match = sponsor_info is not None
+    is_skilled_worker_sponsor = sponsor_info["is_skilled_worker"] if sponsor_info else False
+    sponsor_rating = sponsor_info["rating"] if sponsor_info else None
+    sponsor_routes_str = ", ".join(sorted(sponsor_info["routes"])) if sponsor_info else None
 
-    if sponsor_match and positives:
+    # Strong badges require a Skilled Worker licence; everything else is "mentioned".
+    if sponsor_match and is_skilled_worker_sponsor and positives:
         badge = "sponsor_confirmed"
-    elif sponsor_match:
+    elif sponsor_match and is_skilled_worker_sponsor:
         badge = "licensed_sponsor"
     elif positives:
+        # Covers: off-register orgs AND on-register orgs licensed only for other routes
+        # (Creative Worker, Global Business Mobility, Ministers of Religion, etc.)
         badge = "sponsorship_mentioned"
     else:
-        return None  # not on register, no positive keyword
+        return None  # not a Skilled Worker sponsor and no positive keyword
 
     posted = parse_posted_date(job)
     if posted and posted < (datetime.now(timezone.utc).date() - timedelta(days=MAX_DAYS_OLD)):
@@ -313,6 +349,9 @@ def classify(job: dict, sponsor_index: set[str]) -> dict | None:
         "positive_keywords": positives,
         "negative_keywords": negatives,
         "posted_date": posted.isoformat() if posted else None,
+        "sponsor_rating": sponsor_rating,
+        "sponsor_routes": sponsor_routes_str,
+        "is_skilled_worker_sponsor": is_skilled_worker_sponsor,
     }
 
 
@@ -513,9 +552,18 @@ def run_scrape() -> None:
 
     counts = {b: sum(1 for r in rows if r["badge"] == b)
               for b in ("sponsor_confirmed", "licensed_sponsor", "sponsorship_mentioned")}
-    log(f"Done. sponsor_confirmed={counts['sponsor_confirmed']} "
+    skilled_matched = sum(1 for r in rows if r.get("is_skilled_worker_sponsor"))
+    on_register_not_skilled = sum(
+        1 for r in rows if r.get("sponsor_match") and not r.get("is_skilled_worker_sponsor")
+    )
+    log(
+        f"Done. total_kept={len(rows)} | "
+        f"sponsor_confirmed={counts['sponsor_confirmed']} "
         f"licensed_sponsor={counts['licensed_sponsor']} "
-        f"sponsorship_mentioned={counts['sponsorship_mentioned']}")
+        f"sponsorship_mentioned={counts['sponsorship_mentioned']} | "
+        f"skilled_worker_matched={skilled_matched} "
+        f"on_register_not_skilled_worker={on_register_not_skilled}"
+    )
 
 
 def main() -> None:

@@ -20,8 +20,14 @@ def make_job(description="", company="SomeCompany", job_id="1"):
     }
 
 
-REGISTER = {"somecompany"}
-NO_REGISTER: set[str] = set()
+REGISTER: dict = {
+    "somecompany": {
+        "rating": "A",
+        "routes": {"Skilled Worker"},
+        "is_skilled_worker": True,
+    }
+}
+NO_REGISTER: dict = {}
 
 
 def test_sponsor_confirmed():
