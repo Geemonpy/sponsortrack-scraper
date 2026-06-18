@@ -59,6 +59,9 @@ MAX_DAYS_OLD = 30             # ignore anything older than this
 # thresholds — this constant is used for an INFORMATIONAL signal only.
 GENERAL_SALARY_THRESHOLD = 41_700
 
+# Lower legitimate threshold for health/care roles (Health and Care Worker visa route).
+HEALTH_CARE_SALARY_THRESHOLD = 25_000
+
 # gov.uk page that always links to the latest register CSV
 SPONSOR_REGISTER_PAGE = (
     "https://www.gov.uk/government/publications/register-of-licensed-sponsors-workers"
@@ -153,6 +156,26 @@ _COMPANY_NOISE = re.compile(
 )
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 _NEGATORS = re.compile(r"\b(no|not|unable|cannot|can't|won't|without)\b")
+
+# Matches health/care terms in a job title to select the lower salary threshold.
+# Scoped to titles (not descriptions) to avoid false positives like "customer care".
+_HEALTH_CARE_TITLE_RE = re.compile(
+    r"\b(?:"
+    r"nurs(?:e|ing)"
+    r"|carer"
+    r"|care\s+(?:worker|assistant|home)"
+    r"|healthcare(?:\s+assistant)?"
+    r"|health\s+care"
+    r"|support\s+worker"
+    r"|nhs"
+    r"|social\s+care"
+    r"|midwife"
+    r"|physiotherapist"
+    r"|paramedic"
+    r"|occupational\s+therapist"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -288,17 +311,31 @@ def format_salary(job: dict) -> str:
     return f"£{int(smin or smax):,}"
 
 
-def salary_signal(job: dict) -> str:
-    """Return meets/below/unknown vs. the general Skilled Worker salary threshold.
+def is_health_care(job: dict) -> bool:
+    """Return True if the job is in the health/care sector.
 
-    Uses salary_max as the best available figure; falls back to salary_min if
-    salary_max is absent. Returns "unknown" when no usable figure exists.
+    Checks the category field first (set on classified rows), then falls back
+    to title keyword matching to catch raw API jobs before category is assigned.
+    """
+    if (job.get("category") or "").lower() == "care":
+        return True
+    return bool(_HEALTH_CARE_TITLE_RE.search(job.get("title") or ""))
+
+
+def salary_signal(job: dict) -> str:
+    """Return meets/below/unknown vs. the sector-appropriate salary threshold.
+
+    Health/care jobs are compared against HEALTH_CARE_SALARY_THRESHOLD (£25,000);
+    all other jobs against GENERAL_SALARY_THRESHOLD (£41,700). Uses salary_max
+    as the best available figure; falls back to salary_min. Returns "unknown"
+    when no usable figure exists.
     This is informational only — it must not affect badge logic or filtering.
     """
     best = job.get("salary_max") or job.get("salary_min")
     if not best:
         return "unknown"
-    return "meets" if best >= GENERAL_SALARY_THRESHOLD else "below"
+    threshold = HEALTH_CARE_SALARY_THRESHOLD if is_health_care(job) else GENERAL_SALARY_THRESHOLD
+    return "meets" if best >= threshold else "below"
 
 
 def parse_posted_date(job: dict) -> date | None:
@@ -589,6 +626,8 @@ def run_scrape() -> None:
     )
     salary_counts = {s: sum(1 for r in rows if r.get("meets_general_threshold") == s)
                      for s in ("meets", "below", "unknown")}
+    health_care_count = sum(1 for r in rows if is_health_care(r))
+    general_count = len(rows) - health_care_count
     log(
         f"Done. total_kept={len(rows)} | "
         f"sponsor_confirmed={counts['sponsor_confirmed']} "
@@ -596,6 +635,7 @@ def run_scrape() -> None:
         f"sponsorship_mentioned={counts['sponsorship_mentioned']} | "
         f"skilled_worker_matched={skilled_matched} "
         f"on_register_not_skilled_worker={on_register_not_skilled} | "
+        f"salary_sector=health_care:{health_care_count}/general:{general_count} "
         f"salary_meets={salary_counts['meets']} "
         f"salary_below={salary_counts['below']} "
         f"salary_unknown={salary_counts['unknown']}"

@@ -3,7 +3,13 @@ Tests for scraper.classify() badge logic and rejection rules.
 Run with: python test_classify.py
 """
 
-from scraper import classify, salary_signal, GENERAL_SALARY_THRESHOLD
+from scraper import (
+    classify,
+    is_health_care,
+    salary_signal,
+    GENERAL_SALARY_THRESHOLD,
+    HEALTH_CARE_SALARY_THRESHOLD,
+)
 
 
 def make_job(description="", company="SomeCompany", job_id="1"):
@@ -159,6 +165,30 @@ def test_promedica24_full_description_rejected():
     print("PASS test_promedica24_full_description_rejected")
 
 
+def test_salary_signal_care_job_meets():
+    """care assistant at £28,000 -> meets (against £25,000 threshold)"""
+    job = {"title": "Care Assistant", "salary_max": 28_000, "salary_min": None}
+    assert is_health_care(job), "Expected is_health_care to return True for 'Care Assistant'"
+    assert salary_signal(job) == "meets", f"Expected meets, got {salary_signal(job)}"
+    print("PASS test_salary_signal_care_job_meets")
+
+
+def test_salary_signal_general_job_below():
+    """IT job at £28,000 -> below (against £41,700 threshold)"""
+    job = {"title": "Junior Software Developer", "salary_max": 28_000, "salary_min": None}
+    assert not is_health_care(job), "Expected is_health_care to return False for IT job"
+    assert salary_signal(job) == "below", f"Expected below, got {salary_signal(job)}"
+    print("PASS test_salary_signal_general_job_below")
+
+
+def test_salary_signal_care_job_below():
+    """care assistant at £20,000 -> below (even against the lower £25,000 threshold)"""
+    job = {"title": "Care Assistant", "salary_max": 20_000, "salary_min": None}
+    assert is_health_care(job), "Expected is_health_care to return True for 'Care Assistant'"
+    assert salary_signal(job) == "below", f"Expected below, got {salary_signal(job)}"
+    print("PASS test_salary_signal_care_job_below")
+
+
 if __name__ == "__main__":
     tests = [
         test_sponsor_confirmed,
@@ -176,6 +206,9 @@ if __name__ == "__main__":
         test_salary_signal_unknown,
         test_classify_includes_salary_signal,
         test_classify_salary_meets,
+        test_salary_signal_care_job_meets,
+        test_salary_signal_general_job_below,
+        test_salary_signal_care_job_below,
     ]
     failures = 0
     for t in tests:
