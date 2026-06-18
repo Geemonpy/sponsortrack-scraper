@@ -54,6 +54,11 @@ RESULTS_PER_PAGE = 50          # Adzuna max
 PAGES_PER_QUERY = 2            # 2 x 50 = up to 100 jobs per search term
 MAX_DAYS_OLD = 30             # ignore anything older than this
 
+# Current general Skilled Worker salary threshold (Apr 2024 onward).
+# Health/care, new-entrant, and national-pay-scale roles have lower legitimate
+# thresholds — this constant is used for an INFORMATIONAL signal only.
+GENERAL_SALARY_THRESHOLD = 41_700
+
 # gov.uk page that always links to the latest register CSV
 SPONSOR_REGISTER_PAGE = (
     "https://www.gov.uk/government/publications/register-of-licensed-sponsors-workers"
@@ -283,6 +288,19 @@ def format_salary(job: dict) -> str:
     return f"£{int(smin or smax):,}"
 
 
+def salary_signal(job: dict) -> str:
+    """Return meets/below/unknown vs. the general Skilled Worker salary threshold.
+
+    Uses salary_max as the best available figure; falls back to salary_min if
+    salary_max is absent. Returns "unknown" when no usable figure exists.
+    This is informational only — it must not affect badge logic or filtering.
+    """
+    best = job.get("salary_max") or job.get("salary_min")
+    if not best:
+        return "unknown"
+    return "meets" if best >= GENERAL_SALARY_THRESHOLD else "below"
+
+
 def parse_posted_date(job: dict) -> date | None:
     created = job.get("created")
     if not created:
@@ -352,6 +370,7 @@ def classify(job: dict, sponsor_index: dict[str, dict]) -> dict | None:
         "sponsor_rating": sponsor_rating,
         "sponsor_routes": sponsor_routes_str,
         "is_skilled_worker_sponsor": is_skilled_worker_sponsor,
+        "meets_general_threshold": salary_signal(job),
     }
 
 
@@ -518,20 +537,32 @@ def run_scrape() -> None:
     # the affected batches without that field.
     BATCH = 500
     drop_junior_col = False
+    drop_salary_col = False
     for i in range(0, len(rows), BATCH):
         chunk = rows[i:i + BATCH]
         if drop_junior_col:
             chunk = [{k: v for k, v in r.items() if k != "junior_friendly"} for r in chunk]
+        if drop_salary_col:
+            chunk = [{k: v for k, v in r.items() if k != "meets_general_threshold"} for r in chunk]
         try:
             supabase.table("jobs").upsert(chunk, on_conflict="external_id").execute()
         except Exception as exc:
-            if "junior_friendly" in str(exc) and not drop_junior_col:
+            exc_str = str(exc)
+            if "junior_friendly" in exc_str and not drop_junior_col:
                 drop_junior_col = True
                 log("WARNING: 'junior_friendly' column not found in Supabase.")
                 log("  Run this SQL to add it:")
                 log("    ALTER TABLE jobs ADD COLUMN junior_friendly BOOLEAN;")
                 log("  Retrying upsert without junior_friendly ...")
                 chunk = [{k: v for k, v in r.items() if k != "junior_friendly"} for r in chunk]
+                supabase.table("jobs").upsert(chunk, on_conflict="external_id").execute()
+            elif "meets_general_threshold" in exc_str and not drop_salary_col:
+                drop_salary_col = True
+                log("WARNING: 'meets_general_threshold' column not found in Supabase.")
+                log("  Run this SQL to add it:")
+                log("    ALTER TABLE jobs ADD COLUMN meets_general_threshold TEXT;")
+                log("  Retrying upsert without meets_general_threshold ...")
+                chunk = [{k: v for k, v in r.items() if k != "meets_general_threshold"} for r in chunk]
                 supabase.table("jobs").upsert(chunk, on_conflict="external_id").execute()
             else:
                 raise
@@ -556,13 +587,18 @@ def run_scrape() -> None:
     on_register_not_skilled = sum(
         1 for r in rows if r.get("sponsor_match") and not r.get("is_skilled_worker_sponsor")
     )
+    salary_counts = {s: sum(1 for r in rows if r.get("meets_general_threshold") == s)
+                     for s in ("meets", "below", "unknown")}
     log(
         f"Done. total_kept={len(rows)} | "
         f"sponsor_confirmed={counts['sponsor_confirmed']} "
         f"licensed_sponsor={counts['licensed_sponsor']} "
         f"sponsorship_mentioned={counts['sponsorship_mentioned']} | "
         f"skilled_worker_matched={skilled_matched} "
-        f"on_register_not_skilled_worker={on_register_not_skilled}"
+        f"on_register_not_skilled_worker={on_register_not_skilled} | "
+        f"salary_meets={salary_counts['meets']} "
+        f"salary_below={salary_counts['below']} "
+        f"salary_unknown={salary_counts['unknown']}"
     )
 
 

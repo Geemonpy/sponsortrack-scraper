@@ -3,7 +3,7 @@ Tests for scraper.classify() badge logic and rejection rules.
 Run with: python test_classify.py
 """
 
-from scraper import classify
+from scraper import classify, salary_signal, GENERAL_SALARY_THRESHOLD
 
 
 def make_job(description="", company="SomeCompany", job_id="1"):
@@ -112,6 +112,46 @@ PROMEDICA24_DESC = (
 )
 
 
+def test_salary_signal_meets():
+    """salary_max >= 41700 -> meets"""
+    assert salary_signal({"salary_max": GENERAL_SALARY_THRESHOLD, "salary_min": 20000}) == "meets"
+    assert salary_signal({"salary_max": 50000, "salary_min": None}) == "meets"
+    print("PASS test_salary_signal_meets")
+
+
+def test_salary_signal_below():
+    """salary_max < 41700 -> below; falls back to salary_min when max is absent"""
+    assert salary_signal({"salary_max": 30000, "salary_min": 25000}) == "below"
+    assert salary_signal({"salary_max": None, "salary_min": 28000}) == "below"
+    print("PASS test_salary_signal_below")
+
+
+def test_salary_signal_unknown():
+    """no usable salary figure -> unknown"""
+    assert salary_signal({"salary_max": None, "salary_min": None}) == "unknown"
+    assert salary_signal({}) == "unknown"
+    print("PASS test_salary_signal_unknown")
+
+
+def test_classify_includes_salary_signal():
+    """classify() row always contains meets_general_threshold"""
+    result = classify(make_job("visa sponsorship available"), REGISTER)
+    assert result is not None
+    assert "meets_general_threshold" in result
+    assert result["meets_general_threshold"] == "unknown"  # make_job has no salary
+    print("PASS test_classify_includes_salary_signal")
+
+
+def test_classify_salary_meets():
+    """classify() reflects meets when salary_max >= threshold"""
+    job = make_job("visa sponsorship available")
+    job["salary_max"] = 45000
+    result = classify(job, REGISTER)
+    assert result is not None
+    assert result["meets_general_threshold"] == "meets"
+    print("PASS test_classify_salary_meets")
+
+
 def test_promedica24_full_description_rejected():
     """Full PROMEDICA24 description with 'do not provide sponsorship or support for Tier 2 Skilled Worker Visas' -> rejected"""
     result = classify(make_job(PROMEDICA24_DESC, company="PROMEDICA24"), NO_REGISTER)
@@ -131,6 +171,11 @@ if __name__ == "__main__":
         test_cannot_provide_visa_sponsorship,
         test_genuine_positive_still_passes,
         test_promedica24_full_description_rejected,
+        test_salary_signal_meets,
+        test_salary_signal_below,
+        test_salary_signal_unknown,
+        test_classify_includes_salary_signal,
+        test_classify_salary_meets,
     ]
     failures = 0
     for t in tests:
