@@ -317,7 +317,14 @@ def is_health_care(job: dict) -> bool:
     Checks the category field first (set on classified rows), then falls back
     to title keyword matching to catch raw API jobs before category is assigned.
     """
-    if (job.get("category") or "").lower() == "care":
+    cat = job.get("category")
+    if isinstance(cat, dict):
+        cat_str = (cat.get("label") or cat.get("tag") or "").lower()
+    elif isinstance(cat, str):
+        cat_str = cat.lower()
+    else:
+        cat_str = ""
+    if any(kw in cat_str for kw in ("care", "health", "nursing", "nurse", "social work")):
         return True
     return bool(_HEALTH_CARE_TITLE_RE.search(job.get("title") or ""))
 

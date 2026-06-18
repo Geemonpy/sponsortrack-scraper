@@ -189,6 +189,19 @@ def test_salary_signal_care_job_below():
     print("PASS test_salary_signal_care_job_below")
 
 
+def test_is_health_care_category_dict():
+    """job['category'] as a dict no longer crashes and is detected as health/care"""
+    job = {
+        "title": "Office Admin",
+        "salary_max": None,
+        "salary_min": None,
+        "category": {"label": "Healthcare & Nursing Jobs", "tag": "healthcare-nursing-jobs"},
+    }
+    assert is_health_care(job), "Expected is_health_care True for healthcare category dict"
+    assert salary_signal(job) == "unknown", f"Expected unknown (no salary), got {salary_signal(job)}"
+    print("PASS test_is_health_care_category_dict")
+
+
 if __name__ == "__main__":
     tests = [
         test_sponsor_confirmed,
@@ -209,6 +222,7 @@ if __name__ == "__main__":
         test_salary_signal_care_job_meets,
         test_salary_signal_general_job_below,
         test_salary_signal_care_job_below,
+        test_is_health_care_category_dict,
     ]
     failures = 0
     for t in tests:
