@@ -6,16 +6,20 @@ Home Office "Register of licensed sponsors: workers", applies badge logic, and
 upserts the results into Supabase.
 
 Run modes:
-    python scraper.py              # run one full scrape now (ideal for cron)
-    python scraper.py --schedule   # stay alive, scrape every day at 10:00
+    python scraper.py                 # run one full scrape now (ideal for cron)
+    python scraper.py --schedule      # stay alive, scrape every day at 10:00
+    python scraper.py --send-alerts-only  # send digest emails for recent jobs only
 
 Environment variables (see .env.example):
     ADZUNA_APP_ID, ADZUNA_APP_KEY, SUPABASE_URL, SUPABASE_KEY
-    SPONSOR_CSV_URL   (optional) pin a specific register CSV instead of auto-discovery
+    SPONSOR_CSV_URL        (optional) pin a specific register CSV instead of auto-discovery
+    RESEND_API_KEY         (optional) Resend key; alerts are skipped when absent
+    ALERT_LOOKBACK_HOURS   (optional, default 24) window for "new" jobs in alert step
 """
 
 import argparse
 import csv
+import html as html_mod
 import io
 import os
 import re
@@ -48,6 +52,10 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 SPONSOR_CSV_URL = os.environ.get("SPONSOR_CSV_URL", "").strip()
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 FANTASTIC_API_KEY = os.environ.get("FANTASTIC_API_KEY", "")
+
+ALERT_FROM = "alerts@sponsorroute.com"
+ALERT_SITE = "https://sponsorroute.com"
+ALERT_MAX_JOBS = 20
 
 ADZUNA_COUNTRY = "gb"
 RESULTS_PER_PAGE = 50          # Adzuna max
@@ -485,6 +493,161 @@ def deduplicate_rows(rows: list[dict]) -> tuple[list[dict], int]:
 
 
 # --------------------------------------------------------------------------- #
+# Alert emails
+# --------------------------------------------------------------------------- #
+def _build_alert_html(jobs: list[dict], total_count: int) -> str:
+    displayed = jobs[:ALERT_MAX_JOBS]
+    items = ""
+    for job in displayed:
+        job_id = job.get("id", "")
+        title = html_mod.escape(job.get("title") or "Unknown Role")
+        company = html_mod.escape(job.get("company") or "")
+        location = html_mod.escape(job.get("location") or "")
+        url = f"{ALERT_SITE}/jobs/{job_id}"
+        loc_html = (
+            f'<span style="color:#888;font-size:13px;"> &middot; {location}</span>'
+            if location else ""
+        )
+        items += (
+            f'<div style="margin-bottom:18px;padding-bottom:18px;border-bottom:1px solid #eee;">'
+            f'<a href="{url}" style="color:#5B43E8;font-weight:600;font-size:15px;'
+            f'text-decoration:none;">{title}</a><br>'
+            f'<span style="color:#444;font-size:14px;">{company}</span>{loc_html}'
+            f'</div>'
+        )
+
+    more_html = ""
+    if total_count > ALERT_MAX_JOBS:
+        extra = total_count - ALERT_MAX_JOBS
+        more_html = (
+            f'<p style="color:#888;font-size:13px;">&hellip;and {extra} more. '
+            f'<a href="{ALERT_SITE}/jobs" style="color:#5B43E8;">'
+            f'See all jobs on the site &rarr;</a></p>'
+        )
+
+    return (
+        "<!DOCTYPE html><html><body "
+        'style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#222;">'
+        '<h2 style="color:#5B43E8;margin-bottom:4px;">New visa-sponsored jobs for you</h2>'
+        '<p style="color:#555;margin-top:4px;margin-bottom:24px;">'
+        "Here are the latest UK jobs with visa sponsorship that match your preferences.</p>"
+        f"{items}{more_html}"
+        '<hr style="border:none;border-top:1px solid #eee;margin:24px 0;">'
+        '<p style="color:#aaa;font-size:12px;">'
+        f'<a href="{ALERT_SITE}/alerts" style="color:#5B43E8;">Manage alert preferences</a>'
+        "</p></body></html>"
+    )
+
+
+def _send_resend_email(resend_key: str, to: str, subject: str, html: str) -> bool:
+    resp = httpx.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+        json={"from": ALERT_FROM, "to": [to], "subject": subject, "html": html},
+        timeout=30,
+    )
+    if resp.status_code not in (200, 201):
+        log(f"  Resend error {resp.status_code} sending to {to}: {resp.text[:120]}")
+        return False
+    return True
+
+
+def send_alerts(supabase) -> None:
+    """Send job-digest emails to active alert subscribers. Errors are logged, never raised."""
+    try:
+        resend_key = os.environ.get("RESEND_API_KEY", "")
+        if not resend_key:
+            log("Alerts: RESEND_API_KEY not set — skipping email send")
+            return
+
+        lookback_hours = int(os.environ.get("ALERT_LOOKBACK_HOURS", "24"))
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+
+        new_jobs_result = (
+            supabase.table("jobs")
+            .select("id, title, company, location, category, description")
+            .gte("created_at", cutoff)
+            .execute()
+        )
+        new_jobs: list[dict] = new_jobs_result.data or []
+        log(f"Alerts: {len(new_jobs)} new job(s) in the last {lookback_hours}h")
+
+        if not new_jobs:
+            log("Alerts: no new jobs — skipping email send")
+            return
+
+        # Active subscription emails
+        active_subs_result = (
+            supabase.table("subscriptions")
+            .select("email")
+            .eq("tier", "alerts")
+            .eq("status", "active")
+            .execute()
+        )
+        active_emails = {row["email"] for row in (active_subs_result.data or [])}
+        if not active_emails:
+            log("Alerts: no active alert subscribers — skipping email send")
+            return
+
+        # Alert preferences for those emails
+        prefs_result = (
+            supabase.table("alert_preferences")
+            .select("email, categories, keyword, location")
+            .eq("is_active", True)
+            .in_("email", list(active_emails))
+            .execute()
+        )
+        subscribers: list[dict] = prefs_result.data or []
+        log(f"Alerts: {len(subscribers)} subscriber(s) with active preferences")
+
+        sent = 0
+        for sub in subscribers:
+            email = sub.get("email", "")
+            if not email:
+                continue
+
+            categories = sub.get("categories") or []
+            keyword = (sub.get("keyword") or "").strip().lower()
+            location_pref = (sub.get("location") or "").strip().lower()
+
+            matched: list[dict] = []
+            for job in new_jobs:
+                # Category filter
+                if categories and (job.get("category") or "") not in categories:
+                    continue
+
+                # Keyword filter (title or description, case-insensitive)
+                if keyword:
+                    title_lc = (job.get("title") or "").lower()
+                    desc_lc = (job.get("description") or "").lower()
+                    if keyword not in title_lc and keyword not in desc_lc:
+                        continue
+
+                # Location filter
+                if location_pref:
+                    job_loc = (job.get("location") or "").lower()
+                    if location_pref not in job_loc:
+                        continue
+
+                matched.append(job)
+
+            if not matched:
+                continue
+
+            html = _build_alert_html(matched, len(matched))
+            subject = "New visa-sponsored jobs for you"
+            ok = _send_resend_email(resend_key, email, subject, html)
+            if ok:
+                sent += 1
+                log(f"  Sent digest to {email} ({len(matched)} job(s))")
+
+        log(f"Alerts: emails sent={sent}/{len(subscribers)} subscriber(s) matched")
+
+    except Exception as exc:
+        log(f"Alerts: ERROR (non-fatal) — {exc!r}")
+
+
+# --------------------------------------------------------------------------- #
 # Main scrape
 # --------------------------------------------------------------------------- #
 def run_scrape() -> None:
@@ -648,14 +811,25 @@ def run_scrape() -> None:
         f"salary_unknown={salary_counts['unknown']}"
     )
 
+    send_alerts(supabase)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SponsorTrack scraper")
     parser.add_argument("--schedule", action="store_true",
                         help="run daily at 10:00 instead of once")
+    parser.add_argument("--send-alerts-only", action="store_true",
+                        help="send digest emails for recent DB jobs without re-scraping")
     args = parser.parse_args()
 
-    if args.schedule:
+    if args.send_alerts_only:
+        missing = [n for n, v in {"SUPABASE_URL": SUPABASE_URL, "SUPABASE_KEY": SUPABASE_KEY}.items() if not v]
+        if missing:
+            log(f"ERROR: missing environment variables: {', '.join(missing)}")
+            sys.exit(1)
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        send_alerts(supabase)
+    elif args.schedule:
         from apscheduler.schedulers.blocking import BlockingScheduler
         scheduler = BlockingScheduler(timezone="Europe/London")
         scheduler.add_job(run_scrape, "cron", hour=10, minute=0)
