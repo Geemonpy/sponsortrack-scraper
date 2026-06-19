@@ -576,28 +576,33 @@ def send_alerts(supabase) -> None:
             log("Alerts: no new jobs — skipping email send")
             return
 
-        # Active subscription emails
+        # Step 1: user_ids with an active alerts subscription
         active_subs_result = (
             supabase.table("subscriptions")
-            .select("email")
+            .select("user_id")
             .eq("tier", "alerts")
             .eq("status", "active")
             .execute()
         )
-        active_emails = {row["email"] for row in (active_subs_result.data or [])}
-        if not active_emails:
+        active_user_ids = [row["user_id"] for row in (active_subs_result.data or []) if row.get("user_id")]
+        if not active_user_ids:
             log("Alerts: no active alert subscribers — skipping email send")
             return
 
-        # Alert preferences for those emails
+        # Step 2: alert_preferences for those user_ids (email lives here, not on subscriptions)
         prefs_result = (
             supabase.table("alert_preferences")
-            .select("email, categories, keyword, location")
+            .select("email, categories, keyword, location, user_id")
             .eq("is_active", True)
-            .in_("email", list(active_emails))
+            .in_("user_id", active_user_ids)
             .execute()
         )
-        subscribers: list[dict] = prefs_result.data or []
+        # Step 3: keep only prefs whose user_id is in the active-subscription set
+        active_user_id_set = set(active_user_ids)
+        subscribers: list[dict] = [
+            row for row in (prefs_result.data or [])
+            if row.get("user_id") in active_user_id_set
+        ]
         log(f"Alerts: {len(subscribers)} subscriber(s) with active preferences")
 
         sent = 0
