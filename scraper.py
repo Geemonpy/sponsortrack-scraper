@@ -785,17 +785,34 @@ def run_scrape() -> None:
                 raise
         log(f"  upserted {i + len(chunk)}/{len(rows)}")
 
-    # Remove rows from previous runs that are no longer valid this scrape.
-    # Only reached when rows is non-empty, so we never wipe the table on a failed run.
-    # Use deduped ids so displaced duplicate rows are also swept from the DB.
-    valid_ids_list = [r["external_id"] for r in rows]
-    del_result = (
-        supabase.table("jobs")
-        .delete()
-        .not_.in_("external_id", valid_ids_list)
-        .execute()
-    )
-    deleted = len(del_result.data) if del_result.data else 0
+    # Remove stale rows: compute the diff in Python and delete in small batches
+    # to avoid URL-length limits from a giant not.in(<all ids>) filter.
+    current_ids = {r["external_id"] for r in rows}
+
+    existing_ids: set[str] = set()
+    FETCH_PAGE = 1000
+    offset = 0
+    while True:
+        page = (
+            supabase.table("jobs")
+            .select("external_id")
+            .range(offset, offset + FETCH_PAGE - 1)
+            .execute()
+        )
+        if not page.data:
+            break
+        existing_ids.update(r["external_id"] for r in page.data)
+        if len(page.data) < FETCH_PAGE:
+            break
+        offset += FETCH_PAGE
+
+    stale_ids = list(existing_ids - current_ids)
+    DELETE_BATCH = 200
+    deleted = 0
+    for i in range(0, len(stale_ids), DELETE_BATCH):
+        batch = stale_ids[i : i + DELETE_BATCH]
+        res = supabase.table("jobs").delete().in_("external_id", batch).execute()
+        deleted += len(res.data) if res.data else 0
     log(f"Deleted {deleted} stale row(s) not present in this scrape")
 
     counts = {b: sum(1 for r in rows if r["badge"] == b)
