@@ -53,7 +53,7 @@ SPONSOR_CSV_URL = os.environ.get("SPONSOR_CSV_URL", "").strip()
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 FANTASTIC_API_KEY = os.environ.get("FANTASTIC_API_KEY", "")
 
-ALERT_FROM = "alerts@sponsorroute.com"
+ALERT_FROM = "SponsorRoute Alerts <alerts@sponsorroute.com>"
 ALERT_SITE = "https://sponsorroute.com"
 ALERT_MAX_JOBS = 20
 
@@ -495,7 +495,7 @@ def deduplicate_rows(rows: list[dict]) -> tuple[list[dict], int]:
 # --------------------------------------------------------------------------- #
 # Alert emails
 # --------------------------------------------------------------------------- #
-def _build_alert_html(jobs: list[dict], total_count: int) -> str:
+def _build_alert_html(jobs: list[dict], total_count: int, subscriber_id: str = "") -> str:
     displayed = jobs[:ALERT_MAX_JOBS]
     items = ""
     for job in displayed:
@@ -525,6 +525,7 @@ def _build_alert_html(jobs: list[dict], total_count: int) -> str:
             f'See all jobs on the site &rarr;</a></p>'
         )
 
+    unsubscribe_url = f"https://sponsorroute.com/unsubscribe?id={subscriber_id}"
     return (
         "<!DOCTYPE html><html><body "
         'style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#222;">'
@@ -535,15 +536,22 @@ def _build_alert_html(jobs: list[dict], total_count: int) -> str:
         '<hr style="border:none;border-top:1px solid #eee;margin:24px 0;">'
         '<p style="color:#aaa;font-size:12px;">'
         f'<a href="{ALERT_SITE}/alerts" style="color:#5B43E8;">Manage alert preferences</a>'
+        "</p>"
+        '<p style="color:#bbb;font-size:11px;margin-top:16px;">'
+        "You&#8217;re receiving this because you signed up for UK visa-sponsorship job alerts at sponsorroute.com. &nbsp;"
+        f'<a href="{unsubscribe_url}" style="color:#bbb;">Unsubscribe</a>'
         "</p></body></html>"
     )
 
 
-def _send_resend_email(resend_key: str, to: str, subject: str, html: str) -> bool:
+def _send_resend_email(resend_key: str, to: str, subject: str, html: str, list_unsubscribe: str = "") -> bool:
+    payload: dict = {"from": ALERT_FROM, "to": [to], "subject": subject, "html": html}
+    if list_unsubscribe:
+        payload["headers"] = {"List-Unsubscribe": f"<{list_unsubscribe}>"}
     resp = httpx.post(
         "https://api.resend.com/emails",
         headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
-        json={"from": ALERT_FROM, "to": [to], "subject": subject, "html": html},
+        json=payload,
         timeout=30,
     )
     if resp.status_code not in (200, 201):
@@ -592,7 +600,7 @@ def send_alerts(supabase) -> None:
         # Step 2: alert_preferences for those user_ids (email lives here, not on subscriptions)
         prefs_result = (
             supabase.table("alert_preferences")
-            .select("email, categories, keyword, location, user_id")
+            .select("id, email, categories, keyword, location, user_id")
             .eq("is_active", True)
             .in_("user_id", active_user_ids)
             .execute()
@@ -639,9 +647,11 @@ def send_alerts(supabase) -> None:
             if not matched:
                 continue
 
-            html = _build_alert_html(matched, len(matched))
+            subscriber_id = sub.get("id", "")
+            html = _build_alert_html(matched, len(matched), subscriber_id)
             subject = "New visa-sponsored jobs for you"
-            ok = _send_resend_email(resend_key, email, subject, html)
+            unsubscribe_url = f"https://sponsorroute.com/unsubscribe?id={subscriber_id}"
+            ok = _send_resend_email(resend_key, email, subject, html, unsubscribe_url)
             if ok:
                 sent += 1
                 log(f"  Sent digest to {email} ({len(matched)} job(s))")
