@@ -1,8 +1,8 @@
 """
-Fantastic Jobs source module
-----------------------------
-Fetches from the Fantastic.jobs direct API (data.fantastic.jobs/v1/active-ats)
-and maps jobs into the Adzuna-compatible shape expected by classify() in scraper.py.
+Active Jobs DB source module (via RapidAPI)
+-------------------------------------------
+Fetches from the Active Jobs DB RapidAPI endpoint and maps jobs into the
+Adzuna-compatible shape expected by classify() in scraper.py.
 """
 
 import re
@@ -10,14 +10,9 @@ import time
 
 import httpx
 
-FANTASTIC_ENDPOINT = "https://data.fantastic.jobs/v1/active-ats"
-FANTASTIC_LIMIT = 50          # was 100 — 1 credit per job, so keep pulls small on the trial
-FANTASTIC_MAX_PAGES = 1       # 1 page x 50 = max 50 jobs/run (preserve trial credits)
-
-# Hard guard: counts how many real API requests we've made this process.
-# Even if scraper.py loops more than FANTASTIC_MAX_PAGES, this module will refuse
-# to make another billed request and return empty, ending pagination cleanly.
-_pages_fetched = 0
+RAPIDAPI_ENDPOINT = "https://active-jobs-db.p.rapidapi.com/active-ats"
+RAPIDAPI_HOST = "active-jobs-db.p.rapidapi.com"
+FANTASTIC_LIMIT = 100   # jobs per page; controls pagination offset in scraper.py
 
 # Strings that strongly suggest a non-UK job despite "United Kingdom" geocoding
 _NON_UK_SIGNALS = ["canberra", "australia", "act health"]
@@ -90,40 +85,35 @@ def map_to_adzuna_shape(job: dict) -> dict | None:
     }
 
 
-def fetch_fantastic_page(fantastic_key: str, offset: int) -> tuple[list[dict], dict]:
+def fetch_fantastic_page(rapidapi_key: str, offset: int, limit: int = FANTASTIC_LIMIT) -> tuple[list[dict], dict]:
     """
-    Fetch one page from the Fantastic.jobs direct API.
+    Fetch one page from the Active Jobs DB RapidAPI endpoint.
     Returns (jobs, response_headers) — caller logs the credit headers.
     Raises httpx.HTTPStatusError on non-200 after one retry on 429.
-
-    Hard-capped at FANTASTIC_MAX_PAGES billed requests per process to protect
-    the trial credit balance.
     """
-    global _pages_fetched
-    if _pages_fetched >= FANTASTIC_MAX_PAGES:
-        # Already hit the per-run request cap — make no further billed calls.
-        return [], {}
-    _pages_fetched += 1
-
     params = {
-        "apiKey": fantastic_key,
         "time_frame": "24h",
         "location": "United Kingdom",
         "description_format": "text",
-        "limit": FANTASTIC_LIMIT,
+        "limit": limit,
         "offset": offset,
     }
-    resp = httpx.get(FANTASTIC_ENDPOINT, params=params, timeout=60)
+    headers = {
+        "x-rapidapi-key": rapidapi_key,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+        "Content-Type": "application/json",
+    }
+    resp = httpx.get(RAPIDAPI_ENDPOINT, params=params, headers=headers, timeout=60)
     if resp.status_code == 429:
         time.sleep(3)
-        resp = httpx.get(FANTASTIC_ENDPOINT, params=params, timeout=60)
+        resp = httpx.get(RAPIDAPI_ENDPOINT, params=params, headers=headers, timeout=60)
     resp.raise_for_status()
 
-    headers = dict(resp.headers)
+    resp_headers = dict(resp.headers)
     data = resp.json()
     if isinstance(data, list):
-        return data, headers
+        return data, resp_headers
     for key in ("data", "jobs", "results"):
         if isinstance(data.get(key), list):
-            return data[key], headers
-    return [], headers
+            return data[key], resp_headers
+    return [], resp_headers
