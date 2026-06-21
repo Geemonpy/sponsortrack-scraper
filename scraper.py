@@ -398,7 +398,7 @@ def classify(job: dict, sponsor_index: dict[str, dict]) -> dict | None:
         # (Creative Worker, Global Business Mobility, Ministers of Religion, etc.)
         badge = "sponsorship_mentioned"
     else:
-        return None  # not a Skilled Worker sponsor and no positive keyword
+        badge = "sponsor_not_verified"
 
     posted = parse_posted_date(job)
     if posted and posted < (datetime.now(timezone.utc).date() - timedelta(days=MAX_DAYS_OLD)):
