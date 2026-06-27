@@ -226,7 +226,7 @@ def discover_sponsor_csv_url() -> str:
     resp.raise_for_status()
     matches = re.findall(
         r"https://assets\.publishing\.service\.gov\.uk/media/[^\"'\s]+?"
-        r"Worker_and_Temporary_Worker\.csv",
+        r"Worker_and_Temporary_Worker[^\"'\s]*\.csv",
         resp.text,
     )
     if not matches:
